@@ -9,6 +9,8 @@
 #include <pspiofilemgr.h>
 #include <pspkernel.h>
 #include <psppower.h>
+#include <psputility.h>
+#include <psputility_osk.h>
 
 #include "input/PSPInput.h"
 #include "render/BlockHighlight.h"
@@ -29,6 +31,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string>
 
 // PSP module metadata
 PSP_MODULE_INFO("MinecraftPSP", PSP_MODULE_USER, 1, 0);
@@ -81,7 +84,6 @@ static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
 static CreativeInventory g_creativeInv;
 static const char *g_inventoryHoverName = nullptr;
 static float g_tickAlpha = 0.0f;
-static float g_tpsDisplay = 20.0f;
 static const char *kWorldDir = "ms0:/PSP/GAME/MinecraftPSP/worlds";
 static const char *kInvLayoutCfgPath = "ms0:/PSP/GAME/MinecraftPSP/inv_layout.cfg";
 static const char *kInvTuneCfgPath = "ms0:/PSP/GAME/MinecraftPSP/inv_tune_mode.cfg";
@@ -120,6 +122,13 @@ static float g_invDeleteOffsetX = -37.874f;
 static float g_invDeleteOffsetY = -0.484f;
 static float g_invTitleOffsetX = -17.314f;
 static float g_invTitleOffsetY = 1.532f;
+static bool g_commandKeyboardOpen = false;
+static bool g_commandKeyboardHandled = false;
+static SceUtilityOskParams g_oskParams;
+static SceUtilityOskData g_oskData;
+static unsigned short g_oskDesc[32];
+static unsigned short g_oskInText[64];
+static unsigned short g_oskOutText[64];
 
 struct HudColVert {
   uint32_t color;
@@ -488,6 +497,10 @@ static inline bool isWaterId(uint8_t id) {
   return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
 }
 
+static inline bool isLavaId(uint8_t id) {
+  return id == BLOCK_LAVA_STILL || id == BLOCK_LAVA_FLOW;
+}
+
 static void worldPathForSlot(int slot, char *out, int outSize) {
   if (!out || outSize <= 0) return;
   snprintf(out, outSize, "%s/world%d.mcpw", kWorldDir, slot + 1);
@@ -583,6 +596,155 @@ static void setStatusMessage(const char *msg, float seconds, uint32_t color = 0x
   snprintf(g_statusText, sizeof(g_statusText), "%s", msg);
   g_statusTimer = seconds;
   g_statusColor = color;
+}
+
+static void asciiToUtf16(const char *src, unsigned short *dst, int dstCount) {
+  if (!dst || dstCount <= 0) return;
+  int i = 0;
+  for (; src && src[i] && i < dstCount - 1; ++i) dst[i] = (unsigned short)((unsigned char)src[i]);
+  dst[i] = 0;
+}
+
+static std::string utf16ToAscii(const unsigned short *src) {
+  std::string out;
+  if (!src) return out;
+  for (int i = 0; src[i] != 0; ++i) {
+    unsigned short ch = src[i];
+    out.push_back((ch >= 32 && ch < 127) ? (char)ch : ' ');
+  }
+  return out;
+}
+
+static std::string trimSpaces(const std::string &s) {
+  size_t begin = 0;
+  while (begin < s.size() && isspace((unsigned char)s[begin])) begin++;
+  size_t end = s.size();
+  while (end > begin && isspace((unsigned char)s[end - 1])) end--;
+  return s.substr(begin, end - begin);
+}
+
+static void beginCommandKeyboard() {
+  if (g_commandKeyboardOpen) return;
+  memset(&g_oskParams, 0, sizeof(g_oskParams));
+  memset(&g_oskData, 0, sizeof(g_oskData));
+  memset(g_oskDesc, 0, sizeof(g_oskDesc));
+  memset(g_oskInText, 0, sizeof(g_oskInText));
+  memset(g_oskOutText, 0, sizeof(g_oskOutText));
+
+  asciiToUtf16("Command", g_oskDesc, (int)(sizeof(g_oskDesc) / sizeof(g_oskDesc[0])));
+  asciiToUtf16("/time set day", g_oskInText, (int)(sizeof(g_oskInText) / sizeof(g_oskInText[0])));
+
+  g_oskData.language = PSP_UTILITY_OSK_LANGUAGE_DEFAULT;
+  g_oskData.lines = 1;
+  g_oskData.unk_24 = 1;
+  g_oskData.inputtype = PSP_UTILITY_OSK_INPUTTYPE_ALL;
+  g_oskData.desc = g_oskDesc;
+  g_oskData.intext = g_oskInText;
+  g_oskData.outtextlength = (int)(sizeof(g_oskOutText) / sizeof(g_oskOutText[0]));
+  g_oskData.outtextlimit = g_oskData.outtextlength - 1;
+  g_oskData.outtext = g_oskOutText;
+
+  g_oskParams.base.size = sizeof(g_oskParams);
+  g_oskParams.base.language = PSP_SYSTEMPARAM_LANGUAGE_ENGLISH;
+  g_oskParams.base.buttonSwap = PSP_UTILITY_ACCEPT_CROSS;
+  g_oskParams.base.graphicsThread = 17;
+  g_oskParams.base.accessThread = 19;
+  g_oskParams.base.fontThread = 18;
+  g_oskParams.base.soundThread = 16;
+  g_oskParams.datacount = 1;
+  g_oskParams.data = &g_oskData;
+
+  int ret = sceUtilityOskInitStart(&g_oskParams);
+  if (ret == 0) {
+    g_commandKeyboardOpen = true;
+    g_commandKeyboardHandled = false;
+    setStatusMessage("Command input opened", 1.2f, 0xFFA0D0FF);
+  } else {
+    setStatusMessage("Failed to open keyboard", 2.5f, 0xFF6060FF);
+  }
+}
+
+static bool resolveNamedTime(const std::string &name, int &tickOut) {
+  if (name == "day") {
+    tickOut = 800;
+    return true;
+  }
+  if (name == "noon") {
+    tickOut = 4800;
+    return true;
+  }
+  if (name == "night") {
+    tickOut = 10400;
+    return true;
+  }
+  if (name == "midnight") {
+    tickOut = 14400;
+    return true;
+  }
+  return false;
+}
+
+static void applyTimeSetCommand(const std::string &rawCmd) {
+  if (!g_level) return;
+  std::string cmd = trimSpaces(rawCmd);
+  for (size_t i = 0; i < cmd.size(); ++i) cmd[i] = (char)tolower((unsigned char)cmd[i]);
+
+  char arg[64] = {0};
+  int scanned = sscanf(cmd.c_str(), "/time set %63s", arg);
+  if (scanned != 1) {
+    setStatusMessage("Use: /time set <day|night|noon|midnight|ticks>", 4.0f, 0xFF60A0FF);
+    return;
+  }
+
+  int setTick = -1;
+  if (resolveNamedTime(arg, setTick)) {
+    // Named aliases use MC-style moments mapped to this game's 19200 tick day.
+  } else {
+    char *endPtr = nullptr;
+    long val = strtol(arg, &endPtr, 10);
+    if (endPtr && *endPtr == '\0') {
+      setTick = (int)val;
+    } else {
+      setStatusMessage("Unknown time word", 2.5f, 0xFF60A0FF);
+      return;
+    }
+  }
+
+  int dayBase = g_level->getDay() * (int)TICKS_PER_DAY;
+  int wrapped = setTick % (int)TICKS_PER_DAY;
+  if (wrapped < 0) wrapped += (int)TICKS_PER_DAY;
+  g_level->setTime((long long)dayBase + wrapped);
+
+  char msg[96];
+  snprintf(msg, sizeof(msg), "Time set to %d", wrapped);
+  setStatusMessage(msg, 2.0f, 0xFF80FF80);
+}
+
+static void updateCommandKeyboard() {
+  if (!g_commandKeyboardOpen) return;
+  int status = sceUtilityOskGetStatus();
+  switch (status) {
+    case PSP_UTILITY_DIALOG_VISIBLE:
+      sceUtilityOskUpdate(1);
+      break;
+    case PSP_UTILITY_DIALOG_QUIT:
+      sceUtilityOskShutdownStart();
+      break;
+    case PSP_UTILITY_DIALOG_NONE: {
+      if (!g_commandKeyboardHandled) {
+        if (g_oskData.result == PSP_UTILITY_OSK_RESULT_CHANGED) {
+          applyTimeSetCommand(utf16ToAscii(g_oskOutText));
+        } else {
+          setStatusMessage("Command cancelled", 1.5f, 0xFFB0B0B0);
+        }
+        g_commandKeyboardHandled = true;
+      }
+      g_commandKeyboardOpen = false;
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 static int firstExistingWorldSlot() {
@@ -790,6 +952,8 @@ static void game_update(float dt) {
     g_statusTimer -= dt;
     if (g_statusTimer <= 0.0f) g_statusText[0] = '\0';
   }
+  updateCommandKeyboard();
+  if (g_commandKeyboardOpen) return;
 
   if (g_inMainMenu) {
     if (g_menuDeleteConfirm) {
@@ -866,6 +1030,10 @@ static void game_update(float dt) {
   }
 
   if (PSPInput_JustPressed(PSP_CTRL_START) && !g_pauseOpen) {
+    if (PSPInput_IsHeld(PSP_CTRL_SELECT) && !g_creativeInv.isOpen()) {
+      beginCommandKeyboard();
+      return;
+    }
     g_pauseOpen = true;
     g_pauseSel = 0;
   } else if (g_pauseOpen) {
@@ -902,12 +1070,6 @@ static void game_update(float dt) {
       g_level->tick();
       s_levelTickAccum -= tickStep;
       ticks++;
-    }
-    if (dt > 0.0001f) {
-      float instTps = (float)ticks / dt;
-      g_tpsDisplay = g_tpsDisplay * 0.85f + instTps * 0.15f;
-      if (g_tpsDisplay > 20.0f) g_tpsDisplay = 20.0f;
-      if (g_tpsDisplay < 0.0f) g_tpsDisplay = 0.0f;
     }
     g_tickAlpha = s_levelTickAccum / tickStep;
     if (g_tickAlpha < 0.0f) g_tickAlpha = 0.0f;
@@ -1233,6 +1395,7 @@ static void game_update(float dt) {
     uint8_t targetBlock = g_level->getBlock(px, py, pz);
     bool canReplaceTarget = (targetBlock == BLOCK_AIR ||
                              isWaterId(targetBlock) ||
+                             isLavaId(targetBlock) ||
                              (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
 
     if (canPlace && !overlaps && canReplaceTarget) {
@@ -1365,12 +1528,6 @@ static void game_render() {
   if (g_statusTimer > 0.0f && g_statusText[0]) {
     hudDrawRect(120.0f, 12.0f, 240.0f, 16.0f, 0xA0000000);
     hudDrawText5x7(128.0f, 16.0f, g_statusText, g_statusColor, 1.1f);
-  }
-  {
-    char tpsText[32];
-    snprintf(tpsText, sizeof(tpsText), "TPS: %.1f", g_tpsDisplay);
-    hudDrawRect(8.0f, 8.0f, 78.0f, 14.0f, 0x90000000);
-    hudDrawText5x7(12.0f, 11.0f, tpsText, 0xFF80FF80, 1.0f);
   }
   sceGuDisable(GU_BLEND);
   sceGuEnable(GU_CULL_FACE);
