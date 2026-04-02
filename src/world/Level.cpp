@@ -32,10 +32,10 @@ void Level::setSimulationFocus(int wx, int wy, int wz, int radius) {
 void Level::tick() {
   m_time += 1;
 
-  // Lighting in chunk meshes depends on sun brightness (day/night).
-  // Retessellate world chunks when sun changes enough to avoid "baked at old time" lighting.
+  // Rebuild lighting meshes only when sun changes by a visible step.
+  // This keeps torch/day-night routing correct while avoiding per-tick rebuild spikes.
   float sun = getSunBrightness();
-  if (fabsf(sun - m_lastSunBrightness) >= 0.02f) {
+  if (fabsf(sun - m_lastSunBrightness) >= 0.12f) {
     markAllChunksDirty();
     m_lastSunBrightness = sun;
   }
