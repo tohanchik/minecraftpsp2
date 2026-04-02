@@ -86,6 +86,7 @@ private:
   };
 
   void tickWater();
+  void markAllChunksDirty();
   bool isWaterBlock(uint8_t id) const;
   bool isLavaBlock(uint8_t id) const;
   int waterIndex(int wx, int wy, int wz) const;
