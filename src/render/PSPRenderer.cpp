@@ -14,8 +14,10 @@
 #define SCR_WIDTH 480
 #define SCR_HEIGHT 272
 
-// Display list - must be in uncached RAM
-static unsigned int __attribute__((aligned(16))) g_list[262144];
+// Display list - must be in uncached RAM.
+// Increased size to avoid intermittent command-list overflow artifacts
+// (purple tinting / split-screen-like corruption when UI emits many GU commands).
+static unsigned int __attribute__((aligned(16))) g_list[524288];
 
 // Frame + depth buffers in VRAM
 static void *g_fbp0; // frame buffer 0
