@@ -1,10 +1,17 @@
 #include "TileRenderer.h"
 #include "../world/Blocks.h"
+#include "../world/MCPELighting.h"
 
 // Fake ambient occlusion lighting per face direction
 #define LIGHT_TOP 0xFFFFFFFF
 #define LIGHT_SIDE 0xFFCCCCCC
 #define LIGHT_BOT 0xFF999999
+
+static inline bool blockLightDominates(float blockL, float skyL) {
+  // Opaque pass is multiplied by sun ambient in ChunkRenderer.
+  // Compare against the darkest sun ambient (~0.15) so block light remains visible at night.
+  return blockL > (skyL * 0.15f + 0.02f);
+}
 
 TileRenderer::TileRenderer(Level *level, Tesselator *opaqueTess, Tesselator *transTess,
                            Tesselator *fancyTess, Tesselator *emitTess)
@@ -42,26 +49,13 @@ bool TileRenderer::tesselateCrossInWorld(uint8_t id, int lx, int ly, int lz, int
   // Sample light from the block position
   float skyL, blkL;
   {
-    // 4J brightness ramp: (1-v)/(v*3+1)
-    static const float lightTable[16] = {
-      0.0f, 0.0625f, 0.125f, 0.1875f, 0.25f, 0.3125f, 0.375f, 0.4375f,
-      0.5f, 0.5625f, 0.625f, 0.6875f, 0.75f, 0.8125f, 0.875f, 1.0f
-    };
-    static bool inited = false;
-    if (!inited) {
-      for (int i = 0; i <= 15; i++) {
-        float v = 1.0f - i / 15.0f;
-        const_cast<float*>(lightTable)[i] = (1.0f - v) / (v * 3.0f + 1.0f);
-      }
-      inited = true;
-    }
     uint8_t sl = (wY + 1 < CHUNK_SIZE_Y) ? m_level->getSkyLight(wX, wY + 1, wZ)
                                           : 15;
     uint8_t bl = m_level->getBlockLight(wX, wY, wZ);
-    skyL = lightTable[sl];
-    blkL = lightTable[bl];
+    skyL = MCPELightRampFromNibble(sl);
+    blkL = MCPELightRampFromNibble(bl);
   }
-  float brightness = (blkL > skyL + 0.05f) ? blkL : skyL;
+  float brightness = blockLightDominates(blkL, skyL) ? blkL : skyL;
   
   uint32_t baseColor = 0xFFFFFFFF;
   // Apply biome green tint for tall grass (vanilla FoliageColor::getDefaultColor)
@@ -154,44 +148,17 @@ float TileRenderer::getSkyLightRaw(int lx, int ly, int lz, int cx, int cz, int d
     skyL = m_level->getSkyLight(wNx, wNy, wNz);
   }
 
-  // 4J brightness ramp: (1-v)/(v*3+1)
-  static const float lightTable[16] = {
-    0.0f, 0.0625f, 0.125f, 0.1875f, 0.25f, 0.3125f, 0.375f, 0.4375f,
-    0.5f, 0.5625f, 0.625f, 0.6875f, 0.75f, 0.8125f, 0.875f, 1.0f
-  };
-  static bool inited = false;
-  if (!inited) {
-    for (int i = 0; i <= 15; i++) {
-      float v = 1.0f - i / 15.0f;
-      const_cast<float*>(lightTable)[i] = (1.0f - v) / (v * 3.0f + 1.0f);
-    }
-    inited = true;
-  }
-  return lightTable[skyL];
+  return MCPELightRampFromNibble(skyL);
 }
 
 // Smooth vertex sky light (4-sample average, no sun multiplier)
 float TileRenderer::getVertexSkyLight(int wx, int wy, int wz,
                                       int dx1, int dy1, int dz1,
                                       int dx2, int dy2, int dz2) {
-  // 4J brightness ramp: (1-v)/(v*3+1)
-  static const float lightTable[16] = {
-    0.0f, 0.0625f, 0.125f, 0.1875f, 0.25f, 0.3125f, 0.375f, 0.4375f,
-    0.5f, 0.5625f, 0.625f, 0.6875f, 0.75f, 0.8125f, 0.875f, 1.0f
-  };
-  static bool inited = false;
-  if (!inited) {
-    for (int i = 0; i <= 15; i++) {
-      float v = 1.0f - i / 15.0f;
-      const_cast<float*>(lightTable)[i] = (1.0f - v) / (v * 3.0f + 1.0f);
-    }
-    inited = true;
-  }
-
   auto getS = [&](int x, int y, int z) -> float {
     if (y < 0 || y >= CHUNK_SIZE_Y) return 1.0f;
     uint8_t skyL = m_level->getSkyLight(x, y, z);
-    return lightTable[skyL];
+    return MCPELightRampFromNibble(skyL);
   };
 
   float lCenter = getS(wx, wy, wz);
@@ -208,24 +175,10 @@ float TileRenderer::getVertexSkyLight(int wx, int wy, int wz,
 float TileRenderer::getVertexBlockLight(int wx, int wy, int wz,
                                         int dx1, int dy1, int dz1,
                                         int dx2, int dy2, int dz2) {
-  // 4J brightness ramp: (1-v)/(v*3+1)
-  static const float lightTable[16] = {
-    0.0f, 0.0625f, 0.125f, 0.1875f, 0.25f, 0.3125f, 0.375f, 0.4375f,
-    0.5f, 0.5625f, 0.625f, 0.6875f, 0.75f, 0.8125f, 0.875f, 1.0f
-  };
-  static bool inited = false;
-  if (!inited) {
-    for (int i = 0; i <= 15; i++) {
-      float v = 1.0f - i / 15.0f;
-      const_cast<float*>(lightTable)[i] = (1.0f - v) / (v * 3.0f + 1.0f);
-    }
-    inited = true;
-  }
-
   auto getB = [&](int x, int y, int z) -> float {
     if (y < 0 || y >= CHUNK_SIZE_Y) return 0.0f;
     uint8_t blkL = m_level->getBlockLight(x, y, z);
-    return lightTable[blkL];
+    return MCPELightRampFromNibble(blkL);
   };
 
   float lCenter = getB(wx, wy, wz);
@@ -315,7 +268,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     if (needFace(lx, ly, lz, cx, cz, id, 0, 1, 0, isFancy)) {
       float sl = getSkyLightRaw(lx, ly, lz, cx, cz, 0, 1, 0);
       float bl = getVertexBlockLight(wX, wY + 1, wZ, 0, 0, 0, 0, 0, 0);
-      float br = (bl > sl + 0.05f) ? bl : sl;
+      float br = blockLightDominates(bl, sl) ? bl : sl;
       uint32_t c = applyLightToFace(topColor, br);
       float u0 = uv.top_x * ts + eps, v0 = uv.top_y * ts + eps;
       float u1 = (uv.top_x + 1) * ts - eps, v1 = (uv.top_y + 1) * ts - eps;
@@ -331,7 +284,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     if (needFace(lx, ly, lz, cx, cz, id, 0, -1, 0, isFancy)) {
       float sl = getSkyLightRaw(lx, ly, lz, cx, cz, 0, -1, 0);
       float bl = getVertexBlockLight(wX, wY - 1, wZ, 0, 0, 0, 0, 0, 0);
-      float br = (bl > sl + 0.05f) ? bl : sl;
+      float br = blockLightDominates(bl, sl) ? bl : sl;
       uint32_t c = applyLightToFace(bottomColor, br);
       float u0 = uv.bot_x * ts + eps, v0 = uv.bot_y * ts + eps;
       float u1 = (uv.bot_x + 1) * ts - eps, v1 = (uv.bot_y + 1) * ts - eps;
@@ -348,7 +301,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
       if (!needFace(lx, ly, lz, cx, cz, id, dx, 0, dz, localFancy)) return;
       float sl = getSkyLightRaw(lx, ly, lz, cx, cz, dx, 0, dz);
       float bl = getVertexBlockLight(wX + dx, wY, wZ + dz, 0, 0, 0, 0, 0, 0);
-      float br = (bl > sl + 0.05f) ? bl : sl;
+      float br = blockLightDominates(bl, sl) ? bl : sl;
       uint32_t c = applyLightToFace(sideColor, br * 0.85f);
 
       float u0 = uv.side_x * ts + eps, v0 = uv.side_y * ts + eps;
@@ -417,7 +370,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
       return fancy ? fncTess : m_transTess;
     }
     // If block light is dominant, route to emitTess
-    if (blkL > skyL + 0.05f) return m_emitTess;
+    if (blockLightDominates(blkL, skyL)) return m_emitTess;
     return skyTess;
   };
 
@@ -437,7 +390,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     float avgSky = (sl00+sl10+sl01+sl11)*0.25f;
 
     Tesselator *t = pickTess(m_opaqueTess, m_fancyTess, avgSky, avgBlk, isFancy);
-    bool useBlk = (avgBlk > avgSky + 0.05f);
+    bool useBlk = blockLightDominates(avgBlk, avgSky);
     uint32_t c00 = applyLightToFace(LIGHT_TOP, useBlk ? bl00 : sl00);
     uint32_t c10 = applyLightToFace(LIGHT_TOP, useBlk ? bl10 : sl10);
     uint32_t c01 = applyLightToFace(LIGHT_TOP, useBlk ? bl01 : sl01);
@@ -464,7 +417,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     float avgBlk=(bl00+bl10+bl01+bl11)*0.25f, avgSky=(sl00+sl10+sl01+sl11)*0.25f;
 
     Tesselator *t = pickTess(m_opaqueTess, m_fancyTess, avgSky, avgBlk, isFancy);
-    bool useBlk = (avgBlk > avgSky + 0.05f);
+    bool useBlk = blockLightDominates(avgBlk, avgSky);
     uint32_t c00=applyLightToFace(LIGHT_BOT, useBlk?bl00:sl00);
     uint32_t c10=applyLightToFace(LIGHT_BOT, useBlk?bl10:sl10);
     uint32_t c01=applyLightToFace(LIGHT_BOT, useBlk?bl01:sl01);
@@ -491,7 +444,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     float avgBlk=(bl11+bl01+bl10+bl00)*0.25f, avgSky=(sl11+sl01+sl10+sl00)*0.25f;
 
     Tesselator *t=pickTess(m_opaqueTess,m_fancyTess,avgSky,avgBlk,isFancy);
-    bool useBlk=(avgBlk>avgSky+0.05f);
+    bool useBlk=blockLightDominates(avgBlk, avgSky);
     uint32_t c11=applyLightToFace(LIGHT_SIDE,useBlk?bl11:sl11);
     uint32_t c01=applyLightToFace(LIGHT_SIDE,useBlk?bl01:sl01);
     uint32_t c10=applyLightToFace(LIGHT_SIDE,useBlk?bl10:sl10);
@@ -518,7 +471,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     float avgBlk=(bl01+bl11+bl00+bl10)*0.25f, avgSky=(sl01+sl11+sl00+sl10)*0.25f;
 
     Tesselator *t=pickTess(m_opaqueTess,m_fancyTess,avgSky,avgBlk,isFancy);
-    bool useBlk=(avgBlk>avgSky+0.05f);
+    bool useBlk=blockLightDominates(avgBlk, avgSky);
     uint32_t c01=applyLightToFace(LIGHT_SIDE,useBlk?bl01:sl01);
     uint32_t c11=applyLightToFace(LIGHT_SIDE,useBlk?bl11:sl11);
     uint32_t c00=applyLightToFace(LIGHT_SIDE,useBlk?bl00:sl00);
@@ -545,7 +498,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     float avgBlk=(bl01+bl11+bl00+bl10)*0.25f, avgSky=(sl01+sl11+sl00+sl10)*0.25f;
 
     Tesselator *t=pickTess(m_opaqueTess,m_fancyTess,avgSky,avgBlk,isFancy);
-    bool useBlk=(avgBlk>avgSky+0.05f);
+    bool useBlk=blockLightDominates(avgBlk, avgSky);
     uint32_t c01=applyLightToFace(LIGHT_SIDE,useBlk?bl01:sl01);
     uint32_t c11=applyLightToFace(LIGHT_SIDE,useBlk?bl11:sl11);
     uint32_t c00=applyLightToFace(LIGHT_SIDE,useBlk?bl00:sl00);
@@ -572,7 +525,7 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     float avgBlk=(bl11+bl01+bl10+bl00)*0.25f, avgSky=(sl11+sl01+sl10+sl00)*0.25f;
 
     Tesselator *t=pickTess(m_opaqueTess,m_fancyTess,avgSky,avgBlk,isFancy);
-    bool useBlk=(avgBlk>avgSky+0.05f);
+    bool useBlk=blockLightDominates(avgBlk, avgSky);
     uint32_t c11=applyLightToFace(LIGHT_SIDE,useBlk?bl11:sl11);
     uint32_t c01=applyLightToFace(LIGHT_SIDE,useBlk?bl01:sl01);
     uint32_t c10=applyLightToFace(LIGHT_SIDE,useBlk?bl10:sl10);
