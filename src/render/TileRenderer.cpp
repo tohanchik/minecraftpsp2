@@ -1,5 +1,6 @@
 #include "TileRenderer.h"
 #include "../world/Blocks.h"
+#include "../world/MCPELighting.h"
 
 // Fake ambient occlusion lighting per face direction
 #define LIGHT_TOP 0xFFFFFFFF
@@ -42,24 +43,11 @@ bool TileRenderer::tesselateCrossInWorld(uint8_t id, int lx, int ly, int lz, int
   // Sample light from the block position
   float skyL, blkL;
   {
-    // 4J brightness ramp: (1-v)/(v*3+1)
-    static const float lightTable[16] = {
-      0.0f, 0.0625f, 0.125f, 0.1875f, 0.25f, 0.3125f, 0.375f, 0.4375f,
-      0.5f, 0.5625f, 0.625f, 0.6875f, 0.75f, 0.8125f, 0.875f, 1.0f
-    };
-    static bool inited = false;
-    if (!inited) {
-      for (int i = 0; i <= 15; i++) {
-        float v = 1.0f - i / 15.0f;
-        const_cast<float*>(lightTable)[i] = (1.0f - v) / (v * 3.0f + 1.0f);
-      }
-      inited = true;
-    }
     uint8_t sl = (wY + 1 < CHUNK_SIZE_Y) ? m_level->getSkyLight(wX, wY + 1, wZ)
                                           : 15;
     uint8_t bl = m_level->getBlockLight(wX, wY, wZ);
-    skyL = lightTable[sl];
-    blkL = lightTable[bl];
+    skyL = MCPELightRampFromNibble(sl);
+    blkL = MCPELightRampFromNibble(bl);
   }
   float brightness = (blkL > skyL + 0.05f) ? blkL : skyL;
   
@@ -154,44 +142,17 @@ float TileRenderer::getSkyLightRaw(int lx, int ly, int lz, int cx, int cz, int d
     skyL = m_level->getSkyLight(wNx, wNy, wNz);
   }
 
-  // 4J brightness ramp: (1-v)/(v*3+1)
-  static const float lightTable[16] = {
-    0.0f, 0.0625f, 0.125f, 0.1875f, 0.25f, 0.3125f, 0.375f, 0.4375f,
-    0.5f, 0.5625f, 0.625f, 0.6875f, 0.75f, 0.8125f, 0.875f, 1.0f
-  };
-  static bool inited = false;
-  if (!inited) {
-    for (int i = 0; i <= 15; i++) {
-      float v = 1.0f - i / 15.0f;
-      const_cast<float*>(lightTable)[i] = (1.0f - v) / (v * 3.0f + 1.0f);
-    }
-    inited = true;
-  }
-  return lightTable[skyL];
+  return MCPELightRampFromNibble(skyL);
 }
 
 // Smooth vertex sky light (4-sample average, no sun multiplier)
 float TileRenderer::getVertexSkyLight(int wx, int wy, int wz,
                                       int dx1, int dy1, int dz1,
                                       int dx2, int dy2, int dz2) {
-  // 4J brightness ramp: (1-v)/(v*3+1)
-  static const float lightTable[16] = {
-    0.0f, 0.0625f, 0.125f, 0.1875f, 0.25f, 0.3125f, 0.375f, 0.4375f,
-    0.5f, 0.5625f, 0.625f, 0.6875f, 0.75f, 0.8125f, 0.875f, 1.0f
-  };
-  static bool inited = false;
-  if (!inited) {
-    for (int i = 0; i <= 15; i++) {
-      float v = 1.0f - i / 15.0f;
-      const_cast<float*>(lightTable)[i] = (1.0f - v) / (v * 3.0f + 1.0f);
-    }
-    inited = true;
-  }
-
   auto getS = [&](int x, int y, int z) -> float {
     if (y < 0 || y >= CHUNK_SIZE_Y) return 1.0f;
     uint8_t skyL = m_level->getSkyLight(x, y, z);
-    return lightTable[skyL];
+    return MCPELightRampFromNibble(skyL);
   };
 
   float lCenter = getS(wx, wy, wz);
@@ -208,24 +169,10 @@ float TileRenderer::getVertexSkyLight(int wx, int wy, int wz,
 float TileRenderer::getVertexBlockLight(int wx, int wy, int wz,
                                         int dx1, int dy1, int dz1,
                                         int dx2, int dy2, int dz2) {
-  // 4J brightness ramp: (1-v)/(v*3+1)
-  static const float lightTable[16] = {
-    0.0f, 0.0625f, 0.125f, 0.1875f, 0.25f, 0.3125f, 0.375f, 0.4375f,
-    0.5f, 0.5625f, 0.625f, 0.6875f, 0.75f, 0.8125f, 0.875f, 1.0f
-  };
-  static bool inited = false;
-  if (!inited) {
-    for (int i = 0; i <= 15; i++) {
-      float v = 1.0f - i / 15.0f;
-      const_cast<float*>(lightTable)[i] = (1.0f - v) / (v * 3.0f + 1.0f);
-    }
-    inited = true;
-  }
-
   auto getB = [&](int x, int y, int z) -> float {
     if (y < 0 || y >= CHUNK_SIZE_Y) return 0.0f;
     uint8_t blkL = m_level->getBlockLight(x, y, z);
-    return lightTable[blkL];
+    return MCPELightRampFromNibble(blkL);
   };
 
   float lCenter = getB(wx, wy, wz);
