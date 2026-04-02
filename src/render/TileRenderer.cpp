@@ -9,6 +9,7 @@
 
 static inline bool blockLightDominates(float blockL, float skyL, float sunMul) {
   // Opaque pass is multiplied by sun ambient in ChunkRenderer.
+  // Keep a bias so torches dominate more as daylight fades.
   return blockL > (skyL * sunMul + 0.02f);
 }
 
