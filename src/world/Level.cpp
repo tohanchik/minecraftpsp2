@@ -32,13 +32,9 @@ void Level::setSimulationFocus(int wx, int wy, int wz, int radius) {
 void Level::tick() {
   m_time += 1;
 
-  // Lighting in chunk meshes depends on sun brightness (day/night).
-  // Retessellate world chunks when sun changes enough to avoid "baked at old time" lighting.
-  float sun = getSunBrightness();
-  if (fabsf(sun - m_lastSunBrightness) >= 0.02f) {
-    markAllChunksDirty();
-    m_lastSunBrightness = sun;
-  }
+  // Track sun brightness for UI/debug consumers without forcing chunk retessellation.
+  // World lighting is modulated at draw time through GU ambient in ChunkRenderer.
+  m_lastSunBrightness = getSunBrightness();
 
   if (m_waterDirty) tickWater();
   if (m_lavaDirty) tickLava();
